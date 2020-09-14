@@ -10,7 +10,7 @@ using ZygoteRules: AContext, pullback
 import Zygote: _pullback
 import Zygote: @adjoint
 import Flux: @functor
-
+using Distributions # for synapse initialization optim
 
 
 
@@ -32,7 +32,7 @@ import Flux: @functor
 # TODO non binary equivalent ... obviously it might end up being graph neural networks.
 
 #= CURRENTLY BEING ADDRESSED
-# TODO connectivity is too vast. treeCount should be a factor
+# TODO connectivity is too vast. treeCount should be as factor
 =#
 
 
@@ -60,16 +60,18 @@ end
 
 Tree(inputSize::Int; maxSize=100, threshold=0.6f0) = begin
     bits = bitrand(inputSize)
+    returnbits = false.*BitArray(undef, size(bits))
     # Half of it is connected by default TODO maxSize is important for connection density limit
-    bitCount = min(maxSize, sum(bits))
-    bitCountInc = Threads.Atomic{Int}(1)
-    Threads.@threads for i in bits
-        Threads.Atomic_add!(bitCountInc, 1)
-        if i == true
-            
-        end
+    bitsum = sum(bits)
+    if bitsum > maxSize
+        bitCount = min(maxSize, bitsum)
+        bitCountInc = 0
+        idxs = sample(findall(bits .== true), maxSize, replace = false)
+        returnbits[idxs] .= true
+    else
+        returnbits .= bits
     end
-    Tree(bits, rand(Float32, sum(bits)), threshold)
+    Tree(returnbits, rand(Float32, sum(returnbits)), threshold)
 end
 
 (t::Tree)(x) = (min.(max.(0.0, t.weights)) .> t.threshold) .& x[t.idxs]
