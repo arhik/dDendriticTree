@@ -12,10 +12,12 @@ import Zygote: @adjoint
 import Flux: @functor
 using Distributions # for synapse initialization optim
 
+using MLDatasets
+using Images
 
 
 #= ADDRESSED ISSUES
-
+# weights are limited to maxSize. treeCount should be as factor but maxSize is used instead
 =#
 
 # TODO function rndActivateBitArray(count::Int, )::BitArray end
@@ -30,11 +32,16 @@ using Distributions # for synapse initialization optim
 # TODO motion estimation after sofic shift estimation.
 # TODO grid cells approach to it.
 # TODO non binary equivalent ... obviously it might end up being graph neural networks.
+# TODO connectivity is too vast. fixed using maxSize treeCount should be as factor but maxSize is used instead
+# TODO more elegant version would be to take any dimension of input. Using Indices is a solution.
+
+
 
 #= CURRENTLY BEING ADDRESSED
-# TODO connectivity is too vast. treeCount should be as factor
+
 =#
 
+traindata = float32.(MNIST.traintensor())
 
 mutable struct Tree
     idxs::BitArray{1}
@@ -61,16 +68,8 @@ end
 Tree(inputSize::Int; maxSize=100, threshold=0.6f0) = begin
     bits = bitrand(inputSize)
     returnbits = false.*BitArray(undef, size(bits))
-    # Half of it is connected by default TODO maxSize is important for connection density limit
-    bitsum = sum(bits)
-    if bitsum > maxSize
-        bitCount = min(maxSize, bitsum)
-        bitCountInc = 0
-        idxs = sample(findall(bits .== true), maxSize, replace = false)
-        returnbits[idxs] .= true
-    else
-        returnbits .= bits
-    end
+    idxs = sample(findall(bits .== true), min(sum(bits), maxSize), replace = false)
+    returnbits[idxs] .= true
     Tree(returnbits, rand(Float32, sum(returnbits)), threshold)
 end
 
@@ -105,7 +104,7 @@ end
 # TODO in this version TreeLayer should present other layers values to the input to
 
 TreeLayer(inputSize::Int, treeCount::Int; fLayer=topK, threshold=0.6) = TreeLayer(
-    [Tree(inputSize/) for i in 1:treeCount],
+    [Tree(inputSize) for i in 1:treeCount],
     bitrand(treeCount),
     rand(treeCount),
     # topK TODO topK needs to be learnt too
@@ -133,24 +132,12 @@ function _pullback(cx::AContext, tl::TreeLayer, x::BitArray)
     return ylayer, back
 end
 
-
 @forward TreeLayer.treeArray Base.iterate, Base.getindex, Base.first, Base.last, Base.firstindex, Base.lastindex, Base.length, Base.push!, Base.pop!, Base.delete!, Base.getindex, Base.size
-
 
 (tl::TreeLayer)(x) = begin
     output = zeros(size(tl))
     i = Threads.Atomic{Int}(1)
     Threads.@threads for (i, t) in collect(zip(1:reduce(*, size(tl)), tl))
-        output[i] = sum(t(x))
-    end
-    tl.weights = output
-    return tl.f(output)
-end
-
-
-(tl::TreeLayer)(x) = begin
-    output = zeros(size(tl))
-    for (i, t) in enumerate(tl)
         output[i] = sum(t(x))
     end
     tl.weights = output
@@ -164,14 +151,12 @@ tl = TreeLayer(10000,100)
 
 tl(bitrand(10000))
 
-x = bitrand(784*64)
+x = bitrand(784*256)
 y = bitrand(1000)
 
-m = Chain(
-    TreeLayer(28*28*64, 10000),
-    TreeLayer(10000, 1000),
-    TreeLayer(1000, 200),
-    TreeLayer(200, 1000)
+model = Chain(
+    TreeLayer(28*28, 1000),
+    TreeLayer(1000, 28*28)
 )
 
 gs = gradient(() -> Flux.mse(m(x), y), params(m))
@@ -181,4 +166,27 @@ lossF(x, y) = sum(x .& y)
 @adjoint lossF(x, y) = lossF(x, y), (Δ) -> (x .& y, y .& x )
 
 gs = gradient((m) -> lossF(m(x), y), m)
+
+opt = Descent()
+
+function customTraining(opt, n)
+    local lossValue
+    local meanLoss = 0.0
+    ps = Flux.params(model)
+    for i in 1:n
+        idx = rand(1:50000)
+        ximg = reshape(traindata[:, :, idx], (28*28, ))
+        x = ximg.>0.0
+        gs = gradient(ps) do
+            lossValue = lossF(model(x), x)
+            return lossValue
+        end
+        meanLoss = (meanLoss + lossValue)/2.0
+        if i % 100 == 0
+            @info "loss [$i]: $meanLoss"
+        end
+        Flux.update!(opt, ps, gs)
+    end
+end
+
 
